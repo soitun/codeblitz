@@ -1,41 +1,35 @@
-import { Injector, ConstructorOf } from '@opensumi/di';
-import {
-  MaybePromise,
-  ContributionProvider,
-  createContributionProvider,
-  LogLevel,
-  ILogService,
-  SupportLogNamespace,
-  StoragePaths,
-  DisposableCollection,
-} from '@opensumi/ide-core-common';
-import { AppConfig, BrowserModule } from '@opensumi/ide-core-browser';
 import { IExtensionBasicMetadata } from '@codeblitzjs/ide-common';
-import * as path from 'path';
-import {
-  BaseCommonChannelHandler,
-  commonChannelPathHandler,
-  RPCServiceChannelPath,
-} from '@opensumi/ide-connection/lib/common/server-handler';
-import {
-  ChannelMessage,
-  ISerializer,
-  RPCServiceCenter,
-  WSChannel,
-  initRPCService,
-} from '@opensumi/ide-connection';
-import { ILogServiceManager } from './base';
-import { INodeLogger, NodeLogger } from './node-logger';
-import { CodeBlitzConnection, ServerPort } from '../../connection';
+import { ConstructorOf, Injector } from '@opensumi/di';
+import { ChannelMessage, initRPCService, ISerializer, RPCServiceCenter, WSChannel } from '@opensumi/ide-connection';
 import { RawMessageIO } from '@opensumi/ide-connection/lib/common/rpc/message-io';
 import { rawSerializer } from '@opensumi/ide-connection/lib/common/serializer/raw';
+import {
+  BaseCommonChannelHandler,
+  RPCServiceChannelPath,
+  CommonChannelPathHandler,
+} from '@opensumi/ide-connection/lib/common/server-handler';
+import { AppConfig, BrowserModule } from '@opensumi/ide-core-browser';
+import {
+  ContributionProvider,
+  createContributionProvider,
+  DisposableCollection,
+  ILogService,
+  LogLevel,
+  MaybePromise,
+  StoragePaths,
+  SupportLogNamespace,
+} from '@opensumi/ide-core-common';
+import * as path from 'path';
+import { CodeBlitzConnection, InMemoryMessageChannel, Port } from '../../connection';
+import { ILogServiceManager } from './base';
+import { INodeLogger, NodeLogger } from './node-logger';
 
-import { IServerApp, HOME_ROOT } from '../../common';
-import { initializeRootFileSystem, initializeHomeFileSystem, unmountRootFS } from './filesystem';
-import { fsExtra as fse } from '../node';
-import { WORKSPACE_ROOT, STORAGE_DIR } from '../../common/constant';
+import { HOME_ROOT, IServerApp } from '../../common';
+import { STORAGE_DIR, WORKSPACE_ROOT } from '../../common/constant';
 import { RootFS, RuntimeConfig } from '../../common/types';
-import { isBackServicesInServer } from '../../common/util';
+import { isBackServicesInServer, tryCatchPromise } from '../../common/util';
+import { fsExtra as fse } from '../node';
+import { initializeHomeFileSystem, initializeRootFileSystem, unmountRootFS } from './filesystem';
 
 export abstract class NodeModule extends BrowserModule {}
 
@@ -124,7 +118,7 @@ export class ServerApp implements IServerApp {
       injector: Injector;
       modules: ModuleConstructor[];
       appConfig: AppConfig;
-    }
+    },
   ) {
     this.injector = opts.injector;
     this.modules = opts.modules || [];
@@ -174,6 +168,10 @@ export class ServerApp implements IServerApp {
       token: INodeLogger,
       useClass: NodeLogger,
     });
+    injector.addProviders({
+      token: CommonChannelPathHandler,
+      useValue: new CommonChannelPathHandler(),
+    });
   }
 
   private async runContributionsPhase(phaseName: keyof ServerAppContribution, ...args: any[]) {
@@ -194,7 +192,7 @@ export class ServerApp implements IServerApp {
       const runtimeConfig: RuntimeConfig = this.injector.get(RuntimeConfig);
       this.rootFS = await initializeRootFileSystem();
       this.disposeCollection.push(
-        await initializeHomeFileSystem(this.rootFS, runtimeConfig.scenario)
+        await initializeHomeFileSystem(this.rootFS, runtimeConfig.scenario),
       );
 
       for (const contribution of this.launchContributionsProvider.getContributions()) {
@@ -225,14 +223,25 @@ export class ServerApp implements IServerApp {
   async start() {
     await this.launch();
     await this.initializeContribution();
-    const handler = new CodeblitzCommonChannelHandler('codeblitz-server');
-    handler.receiveConnection(new CodeBlitzConnection(ServerPort));
+    const commonChannelPathHandler = this.injector.get(CommonChannelPathHandler);
+    const handler = new CodeblitzCommonChannelHandler('codeblitz-server', commonChannelPathHandler);
 
-    commonChannelPathHandler.register(RPCServiceChannelPath, {
+    const channel = this.injector.get(InMemoryMessageChannel) as InMemoryMessageChannel;
+    handler.receiveConnection(new CodeBlitzConnection(channel.port2));
+
+    const channelHandler = {
       handler: (channel: WSChannel, clientId: string) => {
         handleClientChannel(this.injector, this.modules, channel, clientId, this.logger);
       },
       dispose: () => {},
+    };
+
+    commonChannelPathHandler.register(RPCServiceChannelPath, channelHandler);
+
+    this.disposeCollection.push({
+      dispose: () => {
+        commonChannelPathHandler.removeHandler(RPCServiceChannelPath, channelHandler);
+      },
     });
 
     await this.startContribution();
@@ -250,7 +259,7 @@ export class ServerApp implements IServerApp {
 export function bindModuleBackService(
   injector: Injector,
   modules: ModuleConstructor[],
-  serviceCenter: RPCServiceCenter
+  serviceCenter: RPCServiceCenter,
 ) {
   const childInjector = injector.createChild();
 
@@ -274,7 +283,7 @@ export function bindModuleBackService(
         serviceCenter.loadProtocol(service.protocol);
       }
 
-      logger.log('back service', serviceToken);
+      logger.log('bind back service', serviceToken);
       const serviceInstance = childInjector.get(serviceToken);
       const proxyService = createRPCService(servicePath, serviceInstance);
       if (!serviceInstance.client) {
@@ -296,7 +305,7 @@ function handleClientChannel(
   modulesInstances: ModuleConstructor[],
   channel: WSChannel,
   clientId: string,
-  logger: INodeLogger
+  logger: INodeLogger,
 ) {
   logger.log(`New RPC connection ${clientId}`);
 
@@ -306,13 +315,13 @@ function handleClientChannel(
   const remove = serviceCenter.setSumiConnection(
     channel.createSumiConnection({
       io: new RawMessageIO(),
-    })
+    }),
   );
 
   channel.onceClose(() => {
-    remove.dispose();
-    serviceChildInjector.disposeAll();
-
     logger.log(`Remove RPC connection ${clientId}`);
+
+    remove.dispose();
+    tryCatchPromise(() => serviceChildInjector.disposeAll());
   });
 }

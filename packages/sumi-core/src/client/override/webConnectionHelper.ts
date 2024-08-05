@@ -1,23 +1,23 @@
+import { Autowired, Injectable } from '@opensumi/di';
 import { IRuntimeSocketConnection, WSChannel } from '@opensumi/ide-connection';
-import { RawMessageIO } from '@opensumi/ide-connection/lib/common/rpc/message-io';
 import { WSChannelHandler } from '@opensumi/ide-connection/lib/browser/ws-channel-handler';
+import { RawMessageIO } from '@opensumi/ide-connection/lib/common/rpc/message-io';
 import { rawSerializer } from '@opensumi/ide-connection/lib/common/serializer/raw';
-import { ClientPort, CodeBlitzConnection } from '../../connection';
+import { createConnectionService, getDebugLogger, ModuleConstructor, uuid } from '@opensumi/ide-core-browser';
 import { BaseConnectionHelper } from '@opensumi/ide-core-browser/lib/application/runtime/base-socket';
-import { Injectable } from '@opensumi/di';
-import {
-  ModuleConstructor,
-  createConnectionService,
-  getDebugLogger,
-} from '@opensumi/ide-core-browser';
+import { CodeBlitzConnection, InMemoryMessageChannel } from '../../connection';
 
 @Injectable({ multiple: true })
 export class CodeBlitzConnectionHelper extends BaseConnectionHelper {
+  @Autowired(InMemoryMessageChannel)
+  private channel: InMemoryMessageChannel;
+
   getDefaultClientId() {
-    return 'codeblitz';
+    return 'codeblitz-' + uuid(8);
   }
+
   createConnection(): IRuntimeSocketConnection {
-    return new CodeBlitzConnection(ClientPort);
+    return new CodeBlitzConnection(this.channel.port1);
   }
 
   createRPCServiceChannel(modules: ModuleConstructor[]): Promise<WSChannel> {

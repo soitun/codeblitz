@@ -2,8 +2,8 @@
  * Function Call Service Connection
  * 连接 Cline 和 Server, RPC 的模拟实现
  */
-import { SimpleConnection } from '@opensumi/ide-connection/lib/common/connection/drivers/simple';
 import { IRuntimeSocketConnection } from '@opensumi/ide-connection';
+import { SimpleConnection } from '@opensumi/ide-connection/lib/common/connection/drivers/simple';
 import { Disposable, IDisposable } from '@opensumi/ide-core-common';
 
 export interface Port {
@@ -11,7 +11,13 @@ export interface Port {
   call(...args: any): any;
 }
 
-const createChannel: () => { port1: Port; port2: Port } = () => {
+export const InMemoryMessageChannel = Symbol('InMemoryMessageChannel');
+export interface InMemoryMessageChannel {
+  port1: Port;
+  port2: Port;
+}
+
+export const createChannel: () => InMemoryMessageChannel = () => {
   type InnerPort = {
     callback(...args: any[]): any;
     listen(cb: (...args: any[]) => any): void;
@@ -39,10 +45,6 @@ const createChannel: () => { port1: Port; port2: Port } = () => {
   port2._entangledPort = port1;
   return { port1, port2 };
 };
-
-const { port1, port2 } = createChannel();
-
-export { port1 as ClientPort, port2 as ServerPort };
 
 export abstract class RPCService {
   client?: any;
